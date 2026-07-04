@@ -1,0 +1,108 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploys the backend + a private Postgres + a private Redis (Key Value).
+# Security posture: both datastores set ipAllowList: [] — they are reachable
+# ONLY over Render's private network by the backend service, never from the
+# public internet, regardless of credentials. `connectionString` already
+# resolves to the private-network address (verified against Render's docs;
+# there is no separate "internal" variant to opt into).
+#
+# Plan tiers are deliberately left unset below — Render will prompt you to
+# choose one for each resource during the Blueprint creation flow. Pick a
+# paid plan for anything customer-facing: free-tier web services spin down
+# on idle (breaks a live site) and free Postgres expires after 90 days.
+#
+# region: oregon is the documented default — change all three to
+# `singapore` or `frankfurt` if your buyers/factory are closer to Asia/EU;
+# keep all three services in the SAME region so private networking works.
+
+databases:
+  - name: nailfactory-postgres
+    region: oregon
+    postgresMajorVersion: "16"
+    databaseName: nailfactory
+    user: nailfactory
+    ipAllowList: [] # private network only
+
+services:
+  - name: nailfactory-redis
+    type: keyvalue
+    region: oregon
+    ipAllowList: [] # private network only
+    maxmemoryPolicy: allkeys-lru
+
+  - name: nailfactory-backend
+    type: web
+    runtime: docker
+    region: oregon
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    # Runs on every deploy, before the new instance receives traffic —
+    # this is the production equivalent of AUTO_CREATE_TABLES.
+    preDeployCommand: alembic upgrade head
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nailfactory-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: nailfactory-redis
+          type: keyvalue
+          property: connectionString
+
+      # Render generates a strong random value for this on first deploy.
+      - key: JWT_SECRET
+        generateValue: true
+
+      # generateValue produces a generic random string, NOT a valid Fernet
+      # key — this one must be set by hand. Generate it locally with:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: FERNET_KEYS
+        sync: false
+
+      # Payment/AI provider secrets — never committed, entered directly in
+      # the Render dashboard under this service's Environment tab.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+
+      # Set once the frontend's real domain (Vercel) is known — see
+      # DEPLOYMENT.md. ALLOWED_HOSTS is this service's own onrender.com
+      # hostname (+ custom domain, if any); CORS_ALLOWED_ORIGINS is the
+      # frontend's origin.
+      - key: ALLOWED_HOSTS
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
+      # Real factory economics — the margin floor the AI agent enforces is
+      # only meaningful if these reflect actual current costs. Do not leave
+      # the repo's example defaults in place for a real customer.
+      - key: RAW_WIRE_ROD_COST_PER_KG
+        sync: false
+      - key: PROCESSING_OVERHEAD_PER_KG
+        sync: false
+
+      - key: NET_MARGIN_FLOOR
+        value: "0.12"
+      - key: ENFORCE_HTTPS
+        value: "true"
+      - key: AUTO_CREATE_TABLES
+        value: "false"
+      - key: EXPOSE_API_DOCS
+        value: "false"
+      - key: RATE_LIMIT_ANONYMOUS_PER_MINUTE
+        value: "60"
+      - key: RATE_LIMIT_AUTHENTICATED_PER_MINUTE
+        value: "200"
